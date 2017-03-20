@@ -1,6 +1,9 @@
 package gorm_test
 
-import "testing"
+import (
+	"golang.org/x/net/context"
+	"testing"
+)
 
 type BasePost struct {
 	Id    int64
@@ -29,7 +32,8 @@ type EngadgetPost struct {
 func TestPrefixColumnNameForEmbeddedStruct(t *testing.T) {
 	dialect := DB.NewScope(&EngadgetPost{}).Dialect()
 	engadgetPostScope := DB.NewScope(&EngadgetPost{})
-	if !dialect.HasColumn(engadgetPostScope.TableName(), "author_id") || !dialect.HasColumn(engadgetPostScope.TableName(), "author_name") || !dialect.HasColumn(engadgetPostScope.TableName(), "author_email") {
+	ctx := context.Background()
+	if !dialect.HasColumn(ctx, engadgetPostScope.TableName(), "author_id") || !dialect.HasColumn(ctx, engadgetPostScope.TableName(), "author_name") || !dialect.HasColumn(ctx, engadgetPostScope.TableName(), "author_email") {
 		t.Errorf("should has prefix for embedded columns")
 	}
 
@@ -38,7 +42,7 @@ func TestPrefixColumnNameForEmbeddedStruct(t *testing.T) {
 	}
 
 	hnScope := DB.NewScope(&HNPost{})
-	if !dialect.HasColumn(hnScope.TableName(), "user_id") || !dialect.HasColumn(hnScope.TableName(), "user_name") || !dialect.HasColumn(hnScope.TableName(), "user_email") {
+	if !dialect.HasColumn(ctx, hnScope.TableName(), "user_id") || !dialect.HasColumn(ctx, hnScope.TableName(), "user_name") || !dialect.HasColumn(ctx, hnScope.TableName(), "user_email") {
 		t.Errorf("should has prefix for embedded columns")
 	}
 }

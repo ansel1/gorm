@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"golang.org/x/net/context"
 	"reflect"
 	"strings"
 	"time"
@@ -16,12 +17,13 @@ type DB struct {
 	RowsAffected int64
 
 	// single db
-	db                SQLCommon
+	db                *executor
 	blockGlobalUpdate bool
 	logMode           int
 	logger            logger
 	search            *search
 	values            map[string]interface{}
+	context           context.Context
 
 	// global db
 	parent        *DB
@@ -47,7 +49,7 @@ func Open(dialect string, args ...interface{}) (db *DB, err error) {
 		return nil, err
 	}
 	var source string
-	var dbSQL SQLCommon
+	var executor *executor
 
 	switch value := args[0].(type) {
 	case string:
@@ -58,59 +60,61 @@ func Open(dialect string, args ...interface{}) (db *DB, err error) {
 			driver = value
 			source = args[1].(string)
 		}
-		dbSQL, err = sql.Open(driver, source)
+		var sqldb *sql.DB
+		sqldb, err = sql.Open(driver, source)
+		executor = newExecutor(sqldb)
 	case SQLCommon:
-		dbSQL = value
+		executor = newExecutor(value)
 	}
 
 	db = &DB{
-		db:        dbSQL,
+		db:        executor,
 		logger:    defaultLogger,
 		values:    map[string]interface{}{},
 		callbacks: DefaultCallback,
-		dialect:   newDialect(dialect, dbSQL),
+		dialect:   newDialect(dialect, executor),
+		context:   context.Background(),
 	}
 	db.parent = db
 
 	if err == nil {
 		// Send a ping to make sure the database connection is alive.
-		if err = db.DB().Ping(); err != nil {
-			db.DB().Close()
+		if err = db.db.ping(); err != nil {
+			db.Close()
 		}
 	}
 	return
 }
 
-// New clone a new db connection without search conditions
+// New clone a new db connection without search conditions or context
 func (s *DB) New() *DB {
 	clone := s.clone()
 	clone.search = nil
 	clone.Value = nil
+	clone.context = nil
 	return clone
-}
-
-type closer interface {
-	Close() error
 }
 
 // Close close current db connection.  If database connection is not an io.Closer, returns an error.
 func (s *DB) Close() error {
-	if db, ok := s.parent.db.(closer); ok {
-		return db.Close()
-	}
-	return errors.New("can't close current db")
+	return s.parent.db.Close()
 }
 
 // DB get `*sql.DB` from current connection
 // If the underlying database connection is not a *sql.DB, returns nil
 func (s *DB) DB() *sql.DB {
-	db, _ := s.db.(*sql.DB)
-	return db
+	switch d := s.db.sqlCommon.(type) {
+	case *sql.DB:
+		return d
+	case RawDBer:
+		return d.RawDB()
+	}
+	return nil
 }
 
 // CommonDB return the underlying `*sql.DB` or `*sql.Tx` instance, mainly intended to allow coexistence with legacy non-GORM code.
 func (s *DB) CommonDB() SQLCommon {
-	return s.db
+	return s.db.sqlCommon
 }
 
 // Dialect get dialect
@@ -163,7 +167,7 @@ func (s *DB) SingularTable(enable bool) {
 func (s *DB) NewScope(value interface{}) *Scope {
 	dbClone := s.clone()
 	dbClone.Value = value
-	return &Scope{db: dbClone, Search: dbClone.search.clone(), Value: value}
+	return &Scope{db: dbClone, Search: dbClone.search.clone(), Value: value, ctx: dbClone.Context()}
 }
 
 // Where return a new relation, filter records with given conditions, accepts `map`, `struct` or `string` as conditions, refer http://jinzhu.github.io/gorm/crud.html#query
@@ -452,33 +456,24 @@ func (s *DB) Debug() *DB {
 // Begin begin a transaction
 func (s *DB) Begin() *DB {
 	c := s.clone()
-	if db, ok := c.db.(sqlDb); ok {
-		tx, err := db.Begin()
-		c.db = interface{}(tx).(SQLCommon)
+	tx, err := c.db.begin(c.Context())
+	if err != nil {
 		c.AddError(err)
 	} else {
-		c.AddError(ErrCantStartTransaction)
+		c.db = tx
 	}
 	return c
 }
 
 // Commit commit a transaction
 func (s *DB) Commit() *DB {
-	if db, ok := s.db.(sqlTx); ok {
-		s.AddError(db.Commit())
-	} else {
-		s.AddError(ErrInvalidTransaction)
-	}
+	s.AddError(s.db.commit())
 	return s
 }
 
 // Rollback rollback a transaction
 func (s *DB) Rollback() *DB {
-	if db, ok := s.db.(sqlTx); ok {
-		s.AddError(db.Rollback())
-	} else {
-		s.AddError(ErrInvalidTransaction)
-	}
+	s.AddError(s.db.rollback())
 	return s
 }
 
@@ -543,7 +538,7 @@ func (s *DB) HasTable(value interface{}) bool {
 		tableName = scope.TableName()
 	}
 
-	has := scope.Dialect().HasTable(tableName)
+	has := scope.Dialect().HasTable(s.Context(), tableName)
 	s.AddError(scope.db.Error)
 	return has
 }
@@ -628,6 +623,34 @@ func (s *DB) Preload(column string, conditions ...interface{}) *DB {
 	return s.clone().search.Preload(column, conditions...).db
 }
 
+// WithContext associates a context with the db.  The context will be available to
+// callbacks in the Scope, and in go1.8 and later, the context variants
+// of the sql.DB methods will be used.
+//
+// As per best practices with contexts, you should not retain references to
+// a db with an associated context.  Once you've associated a context, use
+// the db and discard it.
+//
+// Will panic if `ctx` is nil.
+func (s *DB) WithContext(ctx context.Context) *DB {
+	if ctx == nil {
+		panic("nil context")
+	}
+	db := s.clone()
+	db.context = ctx
+	return db
+}
+
+// Context returns the context associated with the db.  Will never be nil.
+// Note: returns golang.org/x/net/context.Context to remain compatible
+// with older versions of go.
+func (s *DB) Context() context.Context {
+	if s.context != nil {
+		return s.context
+	}
+	return context.Background()
+}
+
 // Set set setting by name, which could be used in callbacks, will clone a new db, and update its setting
 func (s *DB) Set(name string, value interface{}) *DB {
 	return s.clone().InstantSet(name, value)
@@ -655,7 +678,7 @@ func (s *DB) SetJoinTableHandler(source interface{}, column string, handler Join
 				destination := (&Scope{Value: reflect.New(field.Struct.Type).Interface()}).GetModelStruct().ModelType
 				handler.Setup(field.Relationship, many2many, source, destination)
 				field.Relationship.JoinTableHandler = handler
-				if table := handler.Table(s); scope.Dialect().HasTable(table) {
+				if table := handler.Table(s); scope.Dialect().HasTable(s.Context(), table) {
 					s.Table(table).AutoMigrate(handler)
 				}
 			}
@@ -706,6 +729,7 @@ func (s *DB) clone() *DB {
 		logger:            s.logger,
 		logMode:           s.logMode,
 		values:            map[string]interface{}{},
+		context:           s.context,
 		Value:             s.Value,
 		Error:             s.Error,
 		blockGlobalUpdate: s.blockGlobalUpdate,

@@ -9,6 +9,7 @@ import (
 
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/jinzhu/gorm"
+	"golang.org/x/net/context"
 )
 
 func setIdentityInsert(scope *gorm.Scope) {
@@ -23,7 +24,7 @@ func init() {
 }
 
 type mssql struct {
-	db gorm.SQLCommon
+	db gorm.Executor
 	gorm.DefaultForeignKeyNamer
 }
 
@@ -31,7 +32,7 @@ func (mssql) GetName() string {
 	return "mssql"
 }
 
-func (s *mssql) SetDB(db gorm.SQLCommon) {
+func (s *mssql) SetDB(db gorm.Executor) {
 	s.db = db
 }
 
@@ -95,35 +96,35 @@ func (s *mssql) DataTypeOf(field *gorm.StructField) string {
 	return fmt.Sprintf("%v %v", sqlType, additionalType)
 }
 
-func (s mssql) HasIndex(tableName string, indexName string) bool {
+func (s mssql) HasIndex(ctx context.Context, tableName string, indexName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM sys.indexes WHERE name=? AND object_id=OBJECT_ID(?)", indexName, tableName).Scan(&count)
+	s.db.QueryRowContext(ctx,"SELECT count(*) FROM sys.indexes WHERE name=? AND object_id=OBJECT_ID(?)", indexName, tableName).Scan(&count)
 	return count > 0
 }
 
-func (s mssql) RemoveIndex(tableName string, indexName string) error {
-	_, err := s.db.Exec(fmt.Sprintf("DROP INDEX %v ON %v", indexName, s.Quote(tableName)))
+func (s mssql) RemoveIndex(ctx context.Context, tableName string, indexName string) error {
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX %v ON %v", indexName, s.Quote(tableName)))
 	return err
 }
 
-func (s mssql) HasForeignKey(tableName string, foreignKeyName string) bool {
+func (s mssql) HasForeignKey(ctx context.Context, tableName string, foreignKeyName string) bool {
 	return false
 }
 
-func (s mssql) HasTable(tableName string) bool {
+func (s mssql) HasTable(ctx context.Context, tableName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM INFORMATION_SCHEMA.tables WHERE table_name = ? AND table_catalog = ?", tableName, s.CurrentDatabase()).Scan(&count)
+	s.db.QueryRowContext(ctx,"SELECT count(*) FROM INFORMATION_SCHEMA.tables WHERE table_name = ? AND table_catalog = ?", tableName, s.CurrentDatabase(ctx)).Scan(&count)
 	return count > 0
 }
 
-func (s mssql) HasColumn(tableName string, columnName string) bool {
+func (s mssql) HasColumn(ctx context.Context, tableName string, columnName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM information_schema.columns WHERE table_catalog = ? AND table_name = ? AND column_name = ?", s.CurrentDatabase(), tableName, columnName).Scan(&count)
+	s.db.QueryRowContext(ctx,"SELECT count(*) FROM information_schema.columns WHERE table_catalog = ? AND table_name = ? AND column_name = ?", s.CurrentDatabase(ctx), tableName, columnName).Scan(&count)
 	return count > 0
 }
 
-func (s mssql) CurrentDatabase() (name string) {
-	s.db.QueryRow("SELECT DB_NAME() AS [Current Database]").Scan(&name)
+func (s mssql) CurrentDatabase(ctx context.Context) (name string) {
+	s.db.QueryRowContext(ctx,"SELECT DB_NAME() AS [Current Database]").Scan(&name)
 	return
 }
 

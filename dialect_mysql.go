@@ -3,6 +3,7 @@ package gorm
 import (
 	"crypto/sha1"
 	"fmt"
+	"golang.org/x/net/context"
 	"reflect"
 	"regexp"
 	"strings"
@@ -107,19 +108,19 @@ func (s *mysql) DataTypeOf(field *StructField) string {
 	return fmt.Sprintf("%v %v", sqlType, additionalType)
 }
 
-func (s mysql) RemoveIndex(tableName string, indexName string) error {
-	_, err := s.db.Exec(fmt.Sprintf("DROP INDEX %v ON %v", indexName, s.Quote(tableName)))
+func (s mysql) RemoveIndex(ctx context.Context, tableName string, indexName string) error {
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX %v ON %v", indexName, s.Quote(tableName)))
 	return err
 }
 
-func (s mysql) HasForeignKey(tableName string, foreignKeyName string) bool {
+func (s mysql) HasForeignKey(ctx context.Context, tableName string, foreignKeyName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=? AND TABLE_NAME=? AND CONSTRAINT_NAME=? AND CONSTRAINT_TYPE='FOREIGN KEY'", s.CurrentDatabase(), tableName, foreignKeyName).Scan(&count)
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=? AND TABLE_NAME=? AND CONSTRAINT_NAME=? AND CONSTRAINT_TYPE='FOREIGN KEY'", s.CurrentDatabase(ctx), tableName, foreignKeyName).Scan(&count)
 	return count > 0
 }
 
-func (s mysql) CurrentDatabase() (name string) {
-	s.db.QueryRow("SELECT DATABASE()").Scan(&name)
+func (s mysql) CurrentDatabase(ctx context.Context) (name string) {
+	s.db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&name)
 	return
 }
 

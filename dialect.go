@@ -3,6 +3,7 @@ package gorm
 import (
 	"database/sql"
 	"fmt"
+	"golang.org/x/net/context"
 	"reflect"
 	"strconv"
 	"strings"
@@ -14,7 +15,7 @@ type Dialect interface {
 	GetName() string
 
 	// SetDB set db for dialect
-	SetDB(db SQLCommon)
+	SetDB(db Executor)
 
 	// BindVar return the placeholder for actual values in SQL statements, in many dbs it is "?", Postgres using $1
 	BindVar(i int) string
@@ -24,15 +25,15 @@ type Dialect interface {
 	DataTypeOf(field *StructField) string
 
 	// HasIndex check has index or not
-	HasIndex(tableName string, indexName string) bool
+	HasIndex(ctx context.Context, tableName string, indexName string) bool
 	// HasForeignKey check has foreign key or not
-	HasForeignKey(tableName string, foreignKeyName string) bool
+	HasForeignKey(ctx context.Context, tableName string, foreignKeyName string) bool
 	// RemoveIndex remove index
-	RemoveIndex(tableName string, indexName string) error
+	RemoveIndex(ctx context.Context, tableName string, indexName string) error
 	// HasTable check has table or not
-	HasTable(tableName string) bool
+	HasTable(ctx context.Context, tableName string) bool
 	// HasColumn check has column or not
-	HasColumn(tableName string, columnName string) bool
+	HasColumn(ctx context.Context, tableName string, columnName string) bool
 
 	// LimitAndOffsetSQL return generated SQL with Limit and Offset, as mssql has special case
 	LimitAndOffsetSQL(limit, offset interface{}) string
@@ -45,12 +46,12 @@ type Dialect interface {
 	BuildForeignKeyName(tableName, field, dest string) string
 
 	// CurrentDatabase return current database name
-	CurrentDatabase() string
+	CurrentDatabase(ctx context.Context) string
 }
 
 var dialectsMap = map[string]Dialect{}
 
-func newDialect(name string, db SQLCommon) Dialect {
+func newDialect(name string, db Executor) Dialect {
 	if value, ok := dialectsMap[name]; ok {
 		dialect := reflect.New(reflect.TypeOf(value).Elem()).Interface().(Dialect)
 		dialect.SetDB(db)

@@ -2,6 +2,7 @@ package gorm
 
 import (
 	"fmt"
+	"golang.org/x/net/context"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -14,7 +15,7 @@ type DefaultForeignKeyNamer struct {
 }
 
 type commonDialect struct {
-	db SQLCommon
+	db Executor
 	DefaultForeignKeyNamer
 }
 
@@ -26,7 +27,7 @@ func (commonDialect) GetName() string {
 	return "common"
 }
 
-func (s *commonDialect) SetDB(db SQLCommon) {
+func (s *commonDialect) SetDB(db Executor) {
 	s.db = db
 }
 
@@ -90,35 +91,35 @@ func (s *commonDialect) DataTypeOf(field *StructField) string {
 	return fmt.Sprintf("%v %v", sqlType, additionalType)
 }
 
-func (s commonDialect) HasIndex(tableName string, indexName string) bool {
+func (s commonDialect) HasIndex(ctx context.Context, tableName string, indexName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE table_schema = ? AND table_name = ? AND index_name = ?", s.CurrentDatabase(), tableName, indexName).Scan(&count)
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE table_schema = ? AND table_name = ? AND index_name = ?", s.CurrentDatabase(ctx), tableName, indexName).Scan(&count)
 	return count > 0
 }
 
-func (s commonDialect) RemoveIndex(tableName string, indexName string) error {
-	_, err := s.db.Exec(fmt.Sprintf("DROP INDEX %v", indexName))
+func (s commonDialect) RemoveIndex(ctx context.Context, tableName string, indexName string) error {
+	_, err := s.db.ExecContext(ctx, fmt.Sprintf("DROP INDEX %v", indexName))
 	return err
 }
 
-func (s commonDialect) HasForeignKey(tableName string, foreignKeyName string) bool {
+func (s commonDialect) HasForeignKey(ctx context.Context, tableName string, foreignKeyName string) bool {
 	return false
 }
 
-func (s commonDialect) HasTable(tableName string) bool {
+func (s commonDialect) HasTable(ctx context.Context, tableName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_schema = ? AND table_name = ?", s.CurrentDatabase(), tableName).Scan(&count)
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM INFORMATION_SCHEMA.TABLES WHERE table_schema = ? AND table_name = ?", s.CurrentDatabase(ctx), tableName).Scan(&count)
 	return count > 0
 }
 
-func (s commonDialect) HasColumn(tableName string, columnName string) bool {
+func (s commonDialect) HasColumn(ctx context.Context, tableName string, columnName string) bool {
 	var count int
-	s.db.QueryRow("SELECT count(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = ? AND table_name = ? AND column_name = ?", s.CurrentDatabase(), tableName, columnName).Scan(&count)
+	s.db.QueryRowContext(ctx, "SELECT count(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE table_schema = ? AND table_name = ? AND column_name = ?", s.CurrentDatabase(ctx), tableName, columnName).Scan(&count)
 	return count > 0
 }
 
-func (s commonDialect) CurrentDatabase() (name string) {
-	s.db.QueryRow("SELECT DATABASE()").Scan(&name)
+func (s commonDialect) CurrentDatabase(ctx context.Context) (name string) {
+	s.db.QueryRowContext(ctx, "SELECT DATABASE()").Scan(&name)
 	return
 }
 

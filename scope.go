@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"reflect"
+
+	"golang.org/x/net/context"
 )
 
 // Scope contain current operation's information when you perform any operation on the database
@@ -19,6 +21,7 @@ type Scope struct {
 	Value           interface{}
 	SQL             string
 	SQLVars         []interface{}
+	ctx             context.Context
 	db              *DB
 	instanceID      string
 	primaryKeyField *Field
@@ -57,8 +60,14 @@ func (scope *Scope) NewDB() *DB {
 	return nil
 }
 
-// SQLDB return *sql.DB
+// SQLDB returns a SQLCommon.  Retained for backwards compatibility, but Executor
+// is preferred.
 func (scope *Scope) SQLDB() SQLCommon {
+	return scope.db.CommonDB()
+}
+
+// Executor is the sql executor associated with the scope
+func (scope *Scope) Executor() Executor {
 	return scope.db.db
 }
 
@@ -349,7 +358,7 @@ func (scope *Scope) Exec() *Scope {
 	defer scope.trace(NowFunc())
 
 	if !scope.HasError() {
-		if result, err := scope.SQLDB().Exec(scope.SQL, scope.SQLVars...); scope.Err(err) == nil {
+		if result, err := scope.db.db.ExecContext(scope.Context(), scope.SQL, scope.SQLVars...); scope.Err(err) == nil {
 			if count, err := result.RowsAffected(); scope.Err(err) == nil {
 				scope.db.RowsAffected = count
 			}
@@ -389,11 +398,9 @@ func (scope *Scope) InstanceGet(name string) (interface{}, bool) {
 
 // Begin start a transaction
 func (scope *Scope) Begin() *Scope {
-	if db, ok := scope.SQLDB().(sqlDb); ok {
-		if tx, err := db.Begin(); err == nil {
-			scope.db.db = interface{}(tx).(SQLCommon)
-			scope.InstanceSet("gorm:started_transaction", true)
-		}
+	if tx, err := scope.db.db.begin(scope.Context()); err == nil {
+		scope.db.db = tx
+		scope.InstanceSet("gorm:started_transaction", true)
 	}
 	return scope
 }
@@ -401,16 +408,45 @@ func (scope *Scope) Begin() *Scope {
 // CommitOrRollback commit current transaction if no error happened, otherwise will rollback it
 func (scope *Scope) CommitOrRollback() *Scope {
 	if _, ok := scope.InstanceGet("gorm:started_transaction"); ok {
-		if db, ok := scope.db.db.(sqlTx); ok {
-			if scope.HasError() {
-				db.Rollback()
-			} else {
-				scope.Err(db.Commit())
+		if scope.HasError() {
+			scope.db.db.rollback()
+		} else {
+			err := scope.db.db.commit()
+			if err != ErrInvalidTransaction {
+				// ignore ErrInvalidTransaction.  not sure why.  maybe to allow CommitOrRollback()
+				// to be idempotent?
+				scope.Err(err)
 			}
-			scope.db.db = scope.db.parent.db
 		}
+		scope.db.db = scope.db.parent.db
 	}
 	return scope
+}
+
+// Context returns the context associated with the scope.  Will never be nil.
+func (scope *Scope) Context() context.Context {
+	if scope.ctx != nil {
+		return scope.ctx
+	}
+	return context.Background()
+}
+
+// SetContext updates the context on the scope.  Panics if `ctx` is nil.
+//
+// Consider this API experimental: The convention established
+// by http.Request for associating a struct with a context is to clone the struct.
+// That not useful with scopes.  It would typically be callbacks which
+// would want to modify the context, but callbacks have no means to inject
+// a new Scope into further processing of the operation.
+//
+// I'd don't see a strong drawback to this setter, and I do see cases where
+// callbacks will want to establish new contexts (like tracing), so we'll
+// see how this goes.
+func (scope *Scope) SetContext(ctx context.Context) {
+	if ctx == nil {
+		panic("nil context")
+	}
+	scope.ctx = ctx
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1052,7 +1088,7 @@ func (scope *Scope) createJoinTable(field *StructField) {
 	if relationship := field.Relationship; relationship != nil && relationship.JoinTableHandler != nil {
 		joinTableHandler := relationship.JoinTableHandler
 		joinTable := joinTableHandler.Table(scope.db)
-		if !scope.Dialect().HasTable(joinTable) {
+		if !scope.Dialect().HasTable(scope.Context(), joinTable) {
 			toScope := &Scope{Value: reflect.New(field.Struct.Type).Interface()}
 
 			var sqlTypes, primaryKeys []string
@@ -1133,7 +1169,7 @@ func (scope *Scope) dropColumn(column string) {
 }
 
 func (scope *Scope) addIndex(unique bool, indexName string, column ...string) {
-	if scope.Dialect().HasIndex(scope.TableName(), indexName) {
+	if scope.Dialect().HasIndex(scope.Context(), scope.TableName(), indexName) {
 		return
 	}
 
@@ -1153,7 +1189,7 @@ func (scope *Scope) addIndex(unique bool, indexName string, column ...string) {
 func (scope *Scope) addForeignKey(field string, dest string, onDelete string, onUpdate string) {
 	keyName := scope.Dialect().BuildForeignKeyName(scope.TableName(), field, dest)
 
-	if scope.Dialect().HasForeignKey(scope.TableName(), keyName) {
+	if scope.Dialect().HasForeignKey(scope.Context(), scope.TableName(), keyName) {
 		return
 	}
 	var query = `ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s ON DELETE %s ON UPDATE %s;`
@@ -1161,18 +1197,18 @@ func (scope *Scope) addForeignKey(field string, dest string, onDelete string, on
 }
 
 func (scope *Scope) removeIndex(indexName string) {
-	scope.Dialect().RemoveIndex(scope.TableName(), indexName)
+	scope.Dialect().RemoveIndex(scope.Context(), scope.TableName(), indexName)
 }
 
 func (scope *Scope) autoMigrate() *Scope {
 	tableName := scope.TableName()
 	quotedTableName := scope.QuotedTableName()
 
-	if !scope.Dialect().HasTable(tableName) {
+	if !scope.Dialect().HasTable(scope.Context(), tableName) {
 		scope.createTable()
 	} else {
 		for _, field := range scope.GetModelStruct().StructFields {
-			if !scope.Dialect().HasColumn(tableName, field.DBName) {
+			if !scope.Dialect().HasColumn(scope.Context(), tableName, field.DBName) {
 				if field.IsNormal {
 					sqlTag := scope.Dialect().DataTypeOf(field)
 					scope.Raw(fmt.Sprintf("ALTER TABLE %v ADD %v %v;", quotedTableName, scope.Quote(field.DBName), sqlTag)).Exec()

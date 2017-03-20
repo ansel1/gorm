@@ -18,6 +18,7 @@ import (
 	"github.com/jinzhu/gorm/dialects/postgres"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"github.com/jinzhu/now"
+	"golang.org/x/net/context"
 )
 
 var (
@@ -808,6 +809,28 @@ func TestBlockGlobalUpdate(t *testing.T) {
 	err = db.Where(&Toy{OwnerType: "Martian"}).Delete(&Toy{}).Error
 	if err != nil {
 		t.Error("Unexpected error on conditional delete")
+	}
+}
+
+func TestContext(t *testing.T) {
+	db := DB.New()
+	if db.Context() == nil {
+		t.Error("Expected context to be not nil")
+	}
+	if db.NewScope(nil).Context() == nil {
+		t.Error("Expected scope's context to be not nil")
+	}
+	ctx := context.WithValue(db.Context(), "color", "red")
+	dbWithCtx := db.WithContext(ctx)
+	if dbWithCtx.Context().Value("color") != "red" {
+		t.Error("Expected new context to be associated with db")
+	}
+	if dbWithCtx.NewScope(nil).Context().Value("color") != "red" {
+		t.Error("Expected new context to be associated with scope")
+	}
+	db2 := dbWithCtx.New()
+	if db2.Context().Value("color") == "red" {
+		t.Error("Expected New() to create a database with a new context")
 	}
 }
 
